@@ -52,7 +52,61 @@ npm install
 
 Create a .env.local file in the project root:
 
-Start the development server:
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=your_openrouter_model
+GEMINI_API_KEY=your_gemini_api_key
+TAVILY_API_KEY=your_tavily_api_key
+NEXT_PUBLIC_APP_NAME=DataWhiz
 
+Start the development server:
 npm run dev
 
+Open http://localhost:3000 in your browser.
+
+
+Available Scripts
+npm run dev
+
+Starts the development server.
+npm run build
+
+Creates a production build.
+npm run start
+
+Starts the production server.
+npm run lint
+
+Runs the Next.js linting process.
+
+
+Usage
+Open DataWhiz in your browser.
+Upload a CSV or Excel file.
+Wait for the analysis pipeline to process the dataset.
+Explore KPIs, charts, tables, statistics, quality reports, and insights.
+Use the Ask Data interface to ask questions in natural language.
+Apply filters and explore different analytical views.
+
+
+Project Structure
+app/             Next.js pages and API routes
+components/      Reusable React UI components
+lib/              Data processing, AI, analytics, and visualization logic
+public/           Static assets and branding
+scripts/          Testing and development scripts
+tests/            Test fixtures and contract tests
+
+
+Environment Variables
+DataWhiz uses environment variables for external services:
+
+OPENROUTER_API_KEY: OpenRouter authentication key
+OPENROUTER_MODEL: OpenRouter model identifier
+GEMINI_API_KEY: Google Gemini authentication key
+TAVILY_API_KEY: Tavily API key for market news
+NEXT_PUBLIC_APP_NAME: Application display name
+Never commit .env.local or expose API keys publicly.
+
+License
+This project is private and intended for authorized use.
+```
