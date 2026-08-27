@@ -77,7 +77,7 @@ Starts the production server.
 npm run lint
 
 Runs the Next.js linting process.
-
+```
 
 Usage
 Open DataWhiz in your browser.
@@ -109,4 +109,3 @@ Never commit .env.local or expose API keys publicly.
 
 License
 This project is private and intended for authorized use.
-```
