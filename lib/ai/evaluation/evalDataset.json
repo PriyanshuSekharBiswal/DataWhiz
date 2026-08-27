@@ -1,0 +1,77 @@
+[
+  {
+    "category": "semantic_naming",
+    "id": "sem-1",
+    "input": {
+      "technicalName": "dtv_dig_aud_xxx_all_imp",
+      "physicalType": "number",
+      "sampleValues": [12000, 45000, 92000]
+    },
+    "expected": {
+      "displayName": "Digital TV Audience Impressions",
+      "semanticRole": "measure",
+      "minConfidence": 0.85
+    }
+  },
+  {
+    "category": "semantic_naming",
+    "id": "sem-2",
+    "input": {
+      "technicalName": "dtv_srh_brd_tot_xxx_clk",
+      "physicalType": "number",
+      "sampleValues": [410, 890, 1200]
+    },
+    "expected": {
+      "displayName": "Branded Search Clicks",
+      "semanticRole": "measure",
+      "minConfidence": 0.85
+    }
+  },
+  {
+    "category": "domain_detection",
+    "id": "dom-1",
+    "input": {
+      "columns": ["Pharmacy", "PrescriptionDate", "AmoxicillinUnits", "DailyRevenue"]
+    },
+    "expected": {
+      "primaryDomain": "Healthcare / Pharmacy Retail",
+      "entities": ["Pharmacy", "Product"]
+    }
+  },
+  {
+    "category": "quality_reasoning",
+    "id": "qual-1",
+    "input": {
+      "column": "DiscontinuedDate",
+      "issue": "83% NULL values"
+    },
+    "expected": {
+      "decision": "PRESERVE",
+      "noImputation": true
+    }
+  },
+  {
+    "category": "intent_extraction",
+    "id": "int-1",
+    "input": {
+      "query": "Forecast revenue for the next 12 months in Germany"
+    },
+    "expected": {
+      "task": "time_series_forecast",
+      "filters": { "Country": "Germany" },
+      "horizon": 12
+    }
+  },
+  {
+    "category": "groundedness_check",
+    "id": "gnd-1",
+    "input": {
+      "findingText": "Cardiosense generated €1.84M representing 21.3% of total €8.63M sales.",
+      "actualData": { "CardiosenseRev": 1840000, "TotalRev": 8630000 }
+    },
+    "expected": {
+      "isGrounded": true,
+      "hallucination": false
+    }
+  }
+]
