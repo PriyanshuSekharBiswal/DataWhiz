@@ -20,14 +20,32 @@ function fmtEUR(n: number, compact: boolean = true): string {
   return formatMetricValue(n, undefined, { compact });
 }
 
+export function resolveDateColumn(schemas: any[]): string {
+  const trueDate = schemas.find(s => (s.logicalType === 'date' || s.physicalType === 'date' || s.semanticRole === 'timestamp') && s.logicalType !== 'identifier' && !/key|id$/i.test(s.technicalName))?.technicalName;
+  if (trueDate) return trueDate;
+  const nameDate = schemas.find(s => /(^date$|transaction_date|order_date|sales_date|timestamp|day_date|record_date)/i.test(s.technicalName) && !/key|id$/i.test(s.technicalName))?.technicalName;
+  if (nameDate) return nameDate;
+  const anyDate = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || /date|time|day/i.test(s.technicalName))?.technicalName;
+  return anyDate || schemas[0]?.technicalName || 'Date';
+}
+
+export function resolveMetricColumn(schemas: any[]): string | undefined {
+  const rev = schemas.find(s => (s.logicalType === 'measure_currency' || /revenue|sales|income|turnover|gmv|amount/i.test(s.technicalName)) && s.logicalType !== 'identifier' && !/key|id|zip|year|month|quarter/i.test(s.technicalName))?.technicalName;
+  if (rev) return rev;
+  const measure = schemas.find(s => s.logicalType?.startsWith('measure') && s.logicalType !== 'identifier' && !/key|id|zip|year|month|quarter|code/i.test(s.technicalName))?.technicalName;
+  if (measure) return measure;
+  const num = schemas.find(s => s.physicalType === 'number' && s.logicalType !== 'identifier' && !/key|id|zip|year|month|quarter|day|code/i.test(s.technicalName))?.technicalName;
+  return num;
+}
+
 // ----------------------------------------------------
 // 1. DAY-WISE VIEW
 // ----------------------------------------------------
 export const DayWiseView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
   const [mode, setMode] = useState<'both' | 'raw' | 'ma'>('both');
 
-  const dateCol = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || s.semanticRole === 'timestamp')?.technicalName || schemas[0]?.technicalName || 'Date';
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const dateCol = resolveDateColumn(schemas);
+  const numCol = resolveMetricColumn(schemas);
 
   const dailyData = useMemo(() => {
     const map = new Map<string, number>();
@@ -46,6 +64,38 @@ export const DayWiseView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
   }, [rows, dateCol, numCol]);
 
   const metricLabel = numCol ? (schemas.find(s => s.technicalName === numCol)?.displayName || numCol) : 'Daily Record Count';
+
+  const chartDatasets = useMemo(() => {
+    const rawVals = dailyData.map(d => d.value);
+    const ma7Vals: number[] = [];
+    for (let i = 0; i < rawVals.length; i++) {
+      const start = Math.max(0, i - 7 + 1);
+      const sub = rawVals.slice(start, i + 1);
+      ma7Vals.push(Math.round((sub.reduce((a, b) => a + b, 0) / sub.length) * 100) / 100);
+    }
+
+    const ds: any[] = [];
+    if (mode === 'both' || mode === 'raw') {
+      ds.push({
+        label: `Daily ${metricLabel}`,
+        data: rawVals,
+        color: '#0284C7',
+        fill: mode === 'raw' || mode === 'both',
+        pointRadius: dailyData.length > 30 ? 0 : 4
+      });
+    }
+    if (mode === 'both' || mode === 'ma') {
+      ds.push({
+        label: '7-Day Moving Avg (MA7)',
+        data: ma7Vals,
+        color: '#F59E0B',
+        fill: false,
+        borderWidth: 3,
+        pointRadius: 0
+      });
+    }
+    return ds;
+  }, [dailyData, mode, metricLabel]);
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full animate-rise">
@@ -70,14 +120,16 @@ export const DayWiseView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
         </div>
 
         <ChartFigure
+          key={`chart-daily-${mode}`}
           spec={{
-            id: 'chart-daily',
+            id: `chart-daily-${mode}`,
             title: `Daily ${metricLabel}`,
             why: `Historical trajectory with 7-day moving average baseline for ${metricLabel.toLowerCase()}.`,
             type: 'line',
             x: dateCol,
             y: numCol || 'count',
-            data: dailyData
+            data: dailyData,
+            multiDatasets: chartDatasets
           }}
           height={360}
           onAskAI={onAskAI}
@@ -98,8 +150,8 @@ export const DayWiseView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
 // 2. WEEK-WISE (WEEKLY) VIEW
 // ----------------------------------------------------
 export const WeeklyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
-  const dateCol = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || s.semanticRole === 'timestamp')?.technicalName || schemas[0]?.technicalName || 'Date';
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const dateCol = resolveDateColumn(schemas);
+  const numCol = resolveMetricColumn(schemas);
 
   const weeklyData = useMemo(() => {
     const weekMap = new Map<string, { revenue: number; units: number; orders: number }>();
@@ -193,8 +245,8 @@ export const WeeklyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }
 // 3. WEEKDAY PATTERN VIEW
 // ----------------------------------------------------
 export const WeekdayView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
-  const dateCol = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || /date|time|day/i.test(s.technicalName))?.technicalName;
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const dateCol = resolveDateColumn(schemas);
+  const numCol = resolveMetricColumn(schemas);
 
   const weekdayData = useMemo(() => {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -206,13 +258,15 @@ export const WeekdayView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
 
     for (let i = 0; i < len; i += stride) {
       const r = rows[i];
-      const dStr = dateCol ? String(r[dateCol] || '') : '';
+      const iso = safeIsoDate(r[dateCol]) || String(r[dateCol] || '').trim();
       const v = (numCol ? (parseNumberVal(r[numCol]) || 0) : 1) * stride;
-      const d = new Date(dStr);
-      if (!isNaN(d.getTime())) {
-        const dayIdx = d.getDay();
-        sums[dayIdx] += v;
-        counts[dayIdx]++;
+      if (iso) {
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) {
+          const dayIdx = d.getDay();
+          sums[dayIdx] += v;
+          counts[dayIdx]++;
+        }
       }
     }
 
@@ -282,8 +336,8 @@ export const WeekdayView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
 // 4. MONTHLY VIEW
 // ----------------------------------------------------
 export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
-  const dateCol = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || s.semanticRole === 'timestamp')?.technicalName || schemas[0]?.technicalName || 'Date';
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const dateCol = resolveDateColumn(schemas);
+  const numCol = resolveMetricColumn(schemas);
 
   const monthlyMatrix = useMemo(() => {
     const yearMonthMap = new Map<number, Map<number, number>>();
@@ -308,8 +362,9 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
     }
 
     const years = [...yearMonthMap.keys()].sort();
-    const yr1 = years[0] || 2024;
-    const yr2 = years[1] || 2025;
+    const hasMultipleYears = years.length >= 2;
+    const yr1 = years[0] || new Date().getFullYear();
+    const yr2 = hasMultipleYears ? years[years.length - 1] : yr1;
 
     const rowsSummary = MONTH_NAMES.map((monthName, mIdx) => {
       const rev1 = Math.round((yearMonthMap.get(yr1)?.get(mIdx) || 0) * 100) / 100;
@@ -318,7 +373,7 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
       return { month: monthName, rev1, rev2, yoy, yr1, yr2 };
     });
 
-    return { yr1, yr2, rowsSummary };
+    return { yr1, yr2, rowsSummary, hasMultipleYears };
   }, [rows, dateCol, numCol]);
 
   return (
@@ -327,18 +382,20 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
         <div>
           <h2 className="text-2xl sm:text-3xl font-sans text-[#0A1128] font-bold m-0">Monthly Sales</h2>
           <p className="text-sm text-[#475569] mt-1.5 m-0 font-sans">
-            Monthly aggregate progression grouped by year for direct period-over-period tracking.
+            Monthly aggregate progression across historical cycles to track seasonal dynamics.
           </p>
         </div>
         <div className="range-chip">{monthlyMatrix.rowsSummary.length} MONTHS ANALYZED</div>
       </div>
 
       <div className="panel bg-white border border-[#E2E8F0] shadow-sm flex flex-col gap-4 p-6">
-        <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">Monthly Revenue by Year</h3>
+        <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">
+          {monthlyMatrix.hasMultipleYears ? `Monthly Revenue Comparison (${monthlyMatrix.yr1} vs ${monthlyMatrix.yr2})` : `Monthly Revenue Trajectory (${monthlyMatrix.yr1})`}
+        </h3>
         <ChartFigure
           spec={{
             id: 'chart-monthly-bars',
-            title: `Monthly Revenue Comparison (${monthlyMatrix.yr1} vs ${monthlyMatrix.yr2})`,
+            title: monthlyMatrix.hasMultipleYears ? `Monthly Revenue (${monthlyMatrix.yr1} vs ${monthlyMatrix.yr2})` : `Monthly Revenue (${monthlyMatrix.yr1})`,
             why: 'Direct month-by-month trajectory tracking growth.',
             type: 'bar',
             data: monthlyMatrix.rowsSummary.map(m => ({ name: m.month, value: m.rev2 }))
@@ -357,8 +414,12 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
               <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0]">
                 <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider whitespace-nowrap">Month</th>
                 <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">{monthlyMatrix.yr1} Revenue</th>
-                <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">{monthlyMatrix.yr2} Revenue</th>
-                <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">YoY Change</th>
+                {monthlyMatrix.hasMultipleYears && (
+                  <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">{monthlyMatrix.yr2} Revenue</th>
+                )}
+                {monthlyMatrix.hasMultipleYears && (
+                  <th className="py-3 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">YoY Change</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-[#F1F5F9]">
@@ -366,12 +427,16 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
                 <tr key={idx} className="hover:bg-[#F0F9FF] transition-colors">
                   <td className="py-3 px-4 font-sans font-bold text-sm text-[#0A1128] whitespace-nowrap">{m.month}</td>
                   <td className="py-3 px-4 text-right font-mono text-xs text-[#475569] whitespace-nowrap">{fmtEUR(m.rev1, false)}</td>
-                  <td className="py-3 px-4 text-right font-mono font-bold text-xs text-[#0A1128] whitespace-nowrap">{fmtEUR(m.rev2, false)}</td>
-                  <td className="py-3 px-4 text-right font-mono font-bold text-xs whitespace-nowrap">
-                    <span className={`badge ${m.yoy >= 0 ? 'bg-[#DCFCE7] text-[#15803D]' : 'bg-[#FFE4E6] text-[#BE123C]'}`}>
-                      {m.yoy >= 0 ? '+' : ''}{m.yoy}%
-                    </span>
-                  </td>
+                  {monthlyMatrix.hasMultipleYears && (
+                    <td className="py-3 px-4 text-right font-mono font-bold text-xs text-[#0A1128] whitespace-nowrap">{fmtEUR(m.rev2, false)}</td>
+                  )}
+                  {monthlyMatrix.hasMultipleYears && (
+                    <td className="py-3 px-4 text-right font-mono font-bold text-xs whitespace-nowrap">
+                      <span className={`badge ${m.yoy >= 0 ? 'bg-[#DCFCE7] text-[#15803D]' : 'bg-[#FFE4E6] text-[#BE123C]'}`}>
+                        {m.yoy >= 0 ? '+' : ''}{m.yoy}%
+                      </span>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -386,8 +451,8 @@ export const MonthlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
 // 5. YEARLY VIEW
 // ----------------------------------------------------
 export const YearlyView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
-  const dateCol = schemas.find(s => s.logicalType === 'date' || s.physicalType === 'date' || s.semanticRole === 'timestamp')?.technicalName || schemas[0]?.technicalName || 'Date';
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const dateCol = resolveDateColumn(schemas);
+  const numCol = resolveMetricColumn(schemas);
 
   const yearlyData = useMemo(() => {
     const yrMap = new Map<number, { revenue: number; units: number; orders: number }>();
@@ -504,9 +569,11 @@ export const ProductsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  const entityCol = schemas.find(s => s.semanticRole === 'product_attribute' || s.semanticRole === 'primary_dimension' || s.logicalType === 'dimension_category' || /name|item|product|desc|sku|supplier|carrier|campaign/i.test(s.technicalName))?.technicalName || schemas[0]?.technicalName;
-  const catCol = schemas.find(s => s.logicalType === 'dimension_category' || /cat|group|dept|type/i.test(s.technicalName))?.technicalName;
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const entityCol = schemas.find(s => s.semanticRole === 'product_attribute' || s.semanticRole === 'primary_dimension' || s.logicalType === 'dimension_category' || /name|item|product|desc|sku|supplier|carrier|campaign/i.test(s.technicalName))?.technicalName
+    || schemas.find(s => s.physicalType === 'string' && s.logicalType !== 'identifier')?.technicalName
+    || schemas[0]?.technicalName;
+  const catCol = schemas.find(s => (s.logicalType === 'dimension_category' || /cat|group|dept|type|segment|tier|brand/i.test(s.technicalName)) && s.technicalName !== entityCol)?.technicalName;
+  const numCol = resolveMetricColumn(schemas);
 
   const productAggs = useMemo(() => {
     const map = new Map<string, { count: number; value: number; category: string }>();
@@ -516,7 +583,7 @@ export const ProductsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI
     for (let i = 0; i < len; i += stride) {
       const r = rows[i];
       const name = String(r[entityCol] || 'Unknown').trim();
-      const cat = catCol ? String(r[catCol] || 'General') : 'General';
+      const cat = catCol ? String(r[catCol] || 'General').trim() : (name.length > 15 ? name.slice(0, 15) : name);
       const val = (numCol ? (parseNumberVal(r[numCol]) || 0) : 1) * stride;
 
       const current = map.get(name) || { count: 0, value: 0, category: cat };
@@ -572,8 +639,8 @@ export const ProductsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI
         <ChartFigure
           spec={{
             id: 'chart-product-category-split',
-            title: 'Revenue Share by Category',
-            why: 'Concentration of catalog value across product categories.',
+            title: catCol ? 'Revenue Share by Category' : 'Top Catalog Items Share',
+            why: 'Concentration of catalog value across segments.',
             type: 'pie',
             data: categories.slice(0, 6).map(c => ({
               name: c,
@@ -663,7 +730,7 @@ export const ProductsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI
 // ----------------------------------------------------
 export const CategoryView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
   const catCol = schemas.find(s => s.logicalType === 'dimension_category' || /cat|group|dept|type/i.test(s.technicalName))?.technicalName || schemas[0]?.technicalName;
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const numCol = resolveMetricColumn(schemas);
 
   const categoryAggs = useMemo(() => {
     const map = new Map<string, { count: number; value: number }>();
@@ -766,8 +833,10 @@ export const LocationsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskA
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  const locCol = schemas.find(s => /pharmacy|store|location|branch|site|hospital|shop|plant/i.test(s.technicalName))?.technicalName || schemas[0]?.technicalName;
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const locCol = schemas.find(s => s.logicalType === 'dimension_geo' || s.semanticRole === 'location' || /pharmacy|store|location|branch|site|hospital|shop|plant|facility|center/i.test(s.technicalName))?.technicalName
+    || schemas.find(s => s.physicalType === 'string' && s.logicalType !== 'identifier')?.technicalName
+    || schemas[0]?.technicalName;
+  const numCol = resolveMetricColumn(schemas);
 
   const locAggs = useMemo(() => {
     const map = new Map<string, { count: number; value: number }>();
@@ -796,12 +865,13 @@ export const LocationsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskA
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pagedRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const locDisplayName = schemas.find(s => s.technicalName === locCol)?.displayName || locCol || 'Locations';
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full animate-rise">
       <div className="flex items-end justify-between gap-4 flex-wrap pb-4 border-b border-[#E2E8F0]">
         <div>
-          <h2 className="text-2xl sm:text-3xl font-sans text-[#0A1128] font-bold m-0">Location Performance</h2>
+          <h2 className="text-2xl sm:text-3xl font-sans text-[#0A1128] font-bold m-0">{locDisplayName} Performance</h2>
           <p className="text-sm text-[#475569] mt-1.5 m-0 font-sans">
             Performance analysis across operational sites, stores, and geographic units.
           </p>
@@ -810,11 +880,11 @@ export const LocationsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskA
       </div>
 
       <div className="panel bg-white border border-[#E2E8F0] shadow-sm flex flex-col gap-4 p-6">
-        <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">Top 15 Locations by Revenue</h3>
+        <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">Top 15 {locDisplayName} by Revenue</h3>
         <ChartFigure
           spec={{
             id: 'chart-top-locations',
-            title: 'Top Locations',
+            title: `Top ${locDisplayName}`,
             why: 'Revenue contribution across top physical sites.',
             type: 'bar',
             data: locAggs.slice(0, 15).map(l => ({ name: l.name, value: l.value }))
@@ -827,10 +897,10 @@ export const LocationsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskA
       {/* Location Explorer Table */}
       <div className="panel bg-white border border-[#E2E8F0] shadow-sm flex flex-col gap-4 p-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">Full Location Explorer</h3>
+          <h3 className="font-sans text-lg text-[#0A1128] font-bold m-0">Full {locDisplayName} Explorer</h3>
           <input
             type="search"
-            placeholder="Search location…"
+            placeholder={`Search ${locDisplayName.toLowerCase()}…`}
             value={searchQuery}
             onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
             className="input text-xs max-w-[220px] border-[#CBD5E1] focus:border-[#0284C7]"
@@ -842,7 +912,7 @@ export const LocationsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskA
             <thead>
               <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0]">
                 <th className="py-3.5 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider whitespace-nowrap">#</th>
-                <th className="py-3.5 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider whitespace-nowrap">Site Name</th>
+                <th className="py-3.5 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider whitespace-nowrap">{locDisplayName}</th>
                 <th className="py-3.5 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">Orders</th>
                 <th className="py-3.5 px-4 font-mono font-bold text-[#0284C7] text-[11px] uppercase tracking-wider text-right whitespace-nowrap">Revenue</th>
               </tr>
@@ -881,8 +951,10 @@ export const RegionsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 12;
 
-  const regCol = schemas.find(s => s.logicalType === 'dimension_geo' || /region|country|state|territory|zone/i.test(s.technicalName))?.technicalName || schemas[0]?.technicalName;
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName;
+  const regCol = schemas.find(s => s.logicalType === 'dimension_geo' || /region|country|state|territory|zone|market|area/i.test(s.technicalName))?.technicalName
+    || schemas.find(s => s.physicalType === 'string' && s.logicalType !== 'identifier')?.technicalName
+    || schemas[0]?.technicalName;
+  const numCol = resolveMetricColumn(schemas);
 
   const regAggs = useMemo(() => {
     const map = new Map<string, { count: number; value: number }>();
@@ -992,7 +1064,7 @@ export const RegionsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI 
 // 10. FORECAST VIEW
 // ----------------------------------------------------
 export const ForecastView: React.FC<DomainViewProps> = ({ rows, schemas, forecast, onAskAI }) => {
-  const numCol = schemas.find(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName))?.technicalName || schemas[0]?.technicalName;
+  const numCol = resolveMetricColumn(schemas) || schemas[0]?.technicalName;
   const metricLabel = schemas.find(s => s.technicalName === numCol)?.displayName || 'Performance Metric';
 
   const activeForecast = useMemo(() => {
@@ -1111,10 +1183,8 @@ export const ForecastView: React.FC<DomainViewProps> = ({ rows, schemas, forecas
 export const TargetCohortsView: React.FC<DomainViewProps> = ({ rows, schemas, onAskAI }) => {
   const targetCol = schemas.find(s => /^(churn|target|status|is_|has_|converted|converted_flag|default|fraud|defect|promo|promoflag|risk|class|outcome|label)$/i.test(s.technicalName) || s.semanticRole === 'target_variable' || s.logicalType === 'target_binary') || schemas[0];
   const catCols = schemas.filter(s => (s.logicalType.startsWith('dimension') || s.physicalType === 'string') && s.technicalName !== targetCol?.technicalName);
-  const numCols = schemas.filter(s => s.physicalType === 'number' && !/^(year|month|quarter|zip|id)/i.test(s.technicalName));
-
   const primaryDim = catCols.find(s => s.logicalType === 'dimension_category' || /cat|segment|group|type|contract|dept|channel|brand/i.test(s.technicalName))?.technicalName || catCols[0]?.technicalName;
-  const primaryMetric = numCols[0]?.technicalName;
+  const primaryMetric = resolveMetricColumn(schemas);
 
   const targetDistribution = useMemo(() => {
     const map = new Map<string, number>();
@@ -1309,66 +1379,35 @@ export const MarketingMediaView: React.FC<DomainViewProps & { specializedAnalysi
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Channel Family Share */}
         {families.length > 0 && (
-          <div className="card p-5">
-            <h3 className="font-sans font-bold text-base text-[#0A1128] mb-1">Platform Delivery Volume Share</h3>
-            <p className="text-xs text-[#64748B] mb-4">Consolidated advertising exposure across digital platforms.</p>
-            <div className="space-y-3">
-              {families.map((f: any, idx: number) => (
-                <div key={idx} className="space-y-1">
-                  <div className="flex justify-between text-xs font-mono">
-                    <span className="text-[#0A1128] font-bold">{f.family}</span>
-                    <span className="text-[#64748B]">{f.sharePct}% ({Math.round(f.volume).toLocaleString()})</span>
-                  </div>
-                  <div className="w-full bg-[#E2E8F0] h-2 rounded-full overflow-hidden">
-                    <div
-                      className="bg-[#0284C7] h-full rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(100, f.sharePct)}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <ChartFigure
+            spec={{
+              id: 'chart-mmm-family-pie',
+              title: 'Platform Delivery Volume Share',
+              why: 'Consolidated advertising exposure across digital platforms.',
+              type: 'pie',
+              data: families.map((f: any) => ({ name: f.family, value: Math.round(f.volume) }))
+            }}
+            height={320}
+            onAskAI={onAskAI}
+          />
         )}
 
-        {/* Search vs Social Comparison */}
-        {mmmData?.searchVsSocialComparison && (
-          <div className="card p-5">
-            <h3 className="font-sans font-bold text-base text-[#0A1128] mb-1">Search vs Social Media Efficiency</h3>
-            <p className="text-xs text-[#64748B] mb-4">Direct search intent clicks vs broad social media impression reach.</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-[#F8FAFC] border border-[#E2E8F0] p-4 rounded text-center">
-                <div className="font-mono text-xs text-[#0284C7] font-bold uppercase">Search Ad Clicks</div>
-                <div className="font-mono font-bold text-xl text-[#0A1128] mt-1">
-                  {Math.round(mmmData.searchVsSocialComparison.searchVolume).toLocaleString()}
-                </div>
-                <div className="text-xs text-[#64748B] mt-1 font-mono">
-                  Sales Corr: <span className="font-bold text-[#15803D]">r = {mmmData.searchVsSocialComparison.searchCorr}</span>
-                </div>
-              </div>
-              <div className="bg-[#F8FAFC] border border-[#E2E8F0] p-4 rounded text-center">
-                <div className="font-mono text-xs text-[#0284C7] font-bold uppercase">Social Media Imps</div>
-                <div className="font-mono font-bold text-xl text-[#0A1128] mt-1">
-                  {Math.round(mmmData.searchVsSocialComparison.socialVolume).toLocaleString()}
-                </div>
-                <div className="text-xs text-[#64748B] mt-1 font-mono">
-                  Sales Corr: <span className="font-bold text-[#0369A1]">r = {mmmData.searchVsSocialComparison.socialCorr}</span>
-                </div>
-              </div>
-            </div>
-
-            {onAskAI && (
-              <div className="mt-4 pt-4 border-t border-[#E2E8F0] text-center">
-                <button
-                  onClick={() => onAskAI(`What is the return on investment and sales elasticity for Search vs Social channels?`)}
-                  className="btn btn-secondary text-xs inline-flex items-center gap-1.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-[#0284C7]" />
-                  Ask AI to analyze media allocation
-                </button>
-              </div>
-            )}
-          </div>
+        {/* Top Media Drivers Elasticity Bar Chart */}
+        {mediaDrivers.length > 0 && (
+          <ChartFigure
+            spec={{
+              id: 'chart-mmm-drivers-bar',
+              title: `Top Media Channel Drivers (r with ${targetMetric})`,
+              why: 'Ranking of digital channels by correlation with target sales volume.',
+              type: 'bar',
+              data: mediaDrivers.slice(0, 8).map((d: any) => ({
+                name: d.displayName.slice(0, 16),
+                value: Math.round(d.correlationWithSales * 100) / 100
+              }))
+            }}
+            height={320}
+            onAskAI={onAskAI}
+          />
         )}
       </div>
 

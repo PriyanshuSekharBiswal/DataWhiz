@@ -127,7 +127,7 @@ function runTest() {
     passed = false;
   }
 
-  if (context.candidateTargets.length === 0) {
+  if (!context.candidateTargets.some(t => /promo/i.test(t.technicalName))) {
     console.log(`  ✅ PromoFlag is NOT treated as a prediction target.`);
   } else {
     console.error(`  ❌ PromoFlag was wrongly treated as a target: ${context.candidateTargets.map(t => t.technicalName).join(', ')}`);

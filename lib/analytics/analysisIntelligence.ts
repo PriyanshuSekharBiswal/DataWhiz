@@ -680,5 +680,82 @@ export function buildDynamicCharts(
     }
   }
 
+  // FALLBACK 1: Frequency Distribution Histogram (when numeric measure exists)
+  if (finalFigures.length === 0 && primaryMetric) {
+    const vals = rows.map(r => parseNumberVal(r[primaryMetric])).filter((v): v is number => v !== null);
+    if (vals.length > 0) {
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      if (min === max) {
+        finalFigures.push({
+          id: `dist-${primaryMetric}`,
+          title: `${metricDisplayName} Distribution`,
+          why: `Constant value observation across dataset records.`,
+          type: 'bar',
+          unit: primaryMetricSchema?.unit,
+          unitMetadata: unitMeta,
+          isSourceDerivedDimension: true,
+          hasMeaningfulLabels: true,
+          data: [{ name: `${min}`, value: vals.length }],
+          layoutSpan: 'full',
+          height: 300
+        });
+      } else {
+        const binCount = Math.min(8, Math.max(3, Math.floor(Math.sqrt(vals.length))));
+        const binSize = (max - min) / binCount;
+        const bins = new Array(binCount).fill(0);
+        for (const v of vals) {
+          const bIdx = Math.min(binCount - 1, Math.floor((v - min) / binSize));
+          bins[bIdx]++;
+        }
+        const histData = bins.map((count, i) => {
+          const bStart = min + i * binSize;
+          const bEnd = min + (i + 1) * binSize;
+          return {
+            name: `${bStart.toFixed(1)} – ${bEnd.toFixed(1)}`,
+            value: count
+          };
+        });
+        finalFigures.push({
+          id: `dist-${primaryMetric}`,
+          title: `${metricDisplayName} Value Distribution`,
+          why: `Frequency distribution and dispersion pattern across ${metricDisplayName}.`,
+          type: 'bar',
+          unit: 'count',
+          unitMetadata: { measurementType: 'count', unitName: 'Frequency' },
+          isSourceDerivedDimension: true,
+          hasMeaningfulLabels: true,
+          data: histData,
+          layoutSpan: 'full',
+          height: 320
+        });
+      }
+    }
+  }
+
+  // FALLBACK 2: Multi-Measure Benchmark Summary (when multiple measures exist)
+  if (finalFigures.length < 2 && trueNumCols.length >= 2) {
+    const summaryData = trueNumCols.slice(0, 6).map(m => {
+      const vals = rows.map(r => parseNumberVal(r[m.technicalName])).filter((v): v is number => v !== null);
+      const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      return {
+        name: m.displayName || m.technicalName,
+        value: Math.round(avg * 100) / 100
+      };
+    });
+
+    finalFigures.push({
+      id: 'metric-benchmarks-summary',
+      title: 'Average Metric Benchmark Overview',
+      why: 'Comparative averages across key numerical attributes.',
+      type: 'bar',
+      isSourceDerivedDimension: true,
+      hasMeaningfulLabels: true,
+      data: summaryData,
+      layoutSpan: 'half',
+      height: 300
+    });
+  }
+
   return finalFigures;
 }

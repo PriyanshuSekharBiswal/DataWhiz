@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { runFullAnalysisPipeline, PipelineExecutionResult } from '@/lib/pipeline';
-import { processAskQuery } from '@/lib/askDataEngine';
+import { processAskQuery, buildChartForSpec } from '@/lib/askDataEngine';
 import {
   fetchAiPlan,
   fetchLiveNews,
@@ -11,6 +11,8 @@ import {
   fetchAiAskResponse
 } from '@/lib/services/clientApi';
 import { AskDataTurn, DynamicChartSpec } from '@/lib/types';
+import { generateDashboard } from '@/lib/dashboard/dashboardGenerator';
+import { safeIsoDate } from '@/lib/schema/schemaDetector';
 import { Sidebar } from '@/components/navigation/Sidebar';
 import { UploadWorkspace } from '@/components/upload/UploadWorkspace';
 import { KpiGrid } from '@/components/kpi/KpiCard';
@@ -159,22 +161,22 @@ export default function AutoDataAiPlatform() {
   const rawRows = pipelineResult?.context.cleanedRows || [];
   const dateCol = pipelineResult?.context.primaryDateColumn;
 
-  // Extract filterable dimensions (cardinality between 2 and 15)
+  // Extract filterable dimensions (cardinality between 2 and 25)
   const baseFilterableCols = useMemo(() => {
     if (!schemas.length || !rawRows.length) return [];
     return schemas
       .filter(s => {
         if (s.physicalType === 'date' || s.semanticRole === 'primary_key' || s.semanticRole === 'timestamp') return false;
-        return s.logicalType.startsWith('dimension') || s.physicalType === 'string';
+        return s.logicalType.startsWith('dimension') || s.physicalType === 'string' || s.logicalType.startsWith('target') || s.semanticRole === 'category' || s.semanticRole === 'boolean' || s.semanticRole === 'target_variable';
       })
       .map(s => {
         const set = new Set<string>();
         const stride = rawRows.length > 10000 ? Math.ceil(rawRows.length / 5000) : 1;
         for (let i = 0; i < rawRows.length; i += stride) {
-          const val = String(rawRows[i][s.technicalName] ?? '').trim();
-          if (val) {
-            set.add(val);
-            if (set.size > 15) break;
+          const rawVal = rawRows[i][s.technicalName];
+          if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+            set.add(String(rawVal).trim());
+            if (set.size > 25) break;
           }
         }
         return {
@@ -183,8 +185,8 @@ export default function AutoDataAiPlatform() {
           options: Array.from(set).sort()
         };
       })
-      .filter(f => f.options.length >= 2 && f.options.length <= 15)
-      .slice(0, 3);
+      .filter(f => f.options.length >= 2 && f.options.length <= 25)
+      .slice(0, 4);
   }, [schemas, rawRows]);
 
   const filterableCols = useMemo(() => {
@@ -205,35 +207,65 @@ export default function AutoDataAiPlatform() {
     }
 
     const activeFilterEntries = Object.entries(filters).filter(([_, v]) => Boolean(v));
-    const matched: Record<string, any>[] = [];
+    let matched: Record<string, any>[] = [];
 
-    for (let i = 0; i < rawRows.length; i++) {
-      const r = rawRows[i];
-      let pass = true;
-      for (let j = 0; j < activeFilterEntries.length; j++) {
-        const [col, val] = activeFilterEntries[j];
-        if (String(r[col] ?? '').trim() !== val) {
-          pass = false;
-          break;
+    if (activeFilterEntries.length > 0) {
+      for (let i = 0; i < rawRows.length; i++) {
+        const r = rawRows[i];
+        let pass = true;
+        for (let j = 0; j < activeFilterEntries.length; j++) {
+          const [col, val] = activeFilterEntries[j];
+          if (String(r[col] ?? '').trim() !== val) {
+            pass = false;
+            break;
+          }
         }
+        if (pass) matched.push(r);
       }
-      if (pass) matched.push(r);
+    } else {
+      matched = rawRows.slice();
     }
 
     if (hasActivePeriod && dateCol && matched.length > 0) {
       const dateSet = new Set<string>();
       for (let i = 0; i < matched.length; i++) {
-        const d = String(matched[i][dateCol] ?? '').trim();
+        const rawDate = matched[i][dateCol];
+        const d = safeIsoDate(rawDate) || String(rawDate ?? '').trim();
         if (d) dateSet.add(d);
       }
       const sortedDates = Array.from(dateSet).sort();
       const nPeriods = period === 'last1' ? 1 : period === 'last4' ? 4 : 8;
       const keepDates = new Set(sortedDates.slice(-nPeriods));
-      return matched.filter(r => keepDates.has(String(r[dateCol] ?? '').trim()));
+      return matched.filter(r => {
+        const rawDate = r[dateCol];
+        const d = safeIsoDate(rawDate) || String(rawDate ?? '').trim();
+        return keepDates.has(d);
+      });
     }
 
     return matched;
   }, [rawRows, filters, period, dateCol]);
+
+  // Dynamically recomputed dashboard when filters or time period change
+  const dynamicDashboard = useMemo(() => {
+    if (!pipelineResult) return null;
+    const hasActiveFilters = Object.keys(filters).some(k => Boolean(filters[k]));
+    const hasActivePeriod = period !== 'all';
+
+    if (!hasActiveFilters && !hasActivePeriod && scopedRows.length === rawRows.length) {
+      return pipelineResult.dashboard;
+    }
+
+    try {
+      return generateDashboard({
+        ...pipelineResult.context,
+        cleanedRows: scopedRows
+      });
+    } catch (err) {
+      console.warn('[Dynamic Dashboard Recalculation]', err);
+      return pipelineResult.dashboard;
+    }
+  }, [pipelineResult, scopedRows, rawRows, filters, period]);
 
   // If no dataset loaded, show Upload Workspace
   if (!pipelineResult) {
@@ -253,9 +285,10 @@ export default function AutoDataAiPlatform() {
     );
   }
 
-  const { context, dashboard, findings, observations, recommendations, statistics, forecast } = pipelineResult;
+  const { context, dashboard: initialDashboard, findings, observations, recommendations, statistics, forecast } = pipelineResult;
+  const dashboard = dynamicDashboard || initialDashboard;
 
-  // Ask Data Message Handler with Deterministic Verification + Gemini
+  // Ask Data Message Handler with Deterministic Verification + Deep AI Synthesis
   const handleSendMessage = async (query: string) => {
     if (!context || !query.trim()) return;
 
@@ -271,20 +304,39 @@ export default function AutoDataAiPlatform() {
     setIsChatDrawerOpen(true);
 
     try {
+      // 1. Run deterministic local intelligence engine (supports graph requests, ranking, comparisons, anomaly, correlation, glossary)
       const responseTurn = processAskQuery(query.trim(), context);
 
-      // Only attempt remote LLM synthesis if local turn is a fallback and does not contain rich table/chart data
-      if (responseTurn.text.startsWith('The dataset contains') && !responseTurn.chart && !responseTurn.tableData) {
-        const profileText = schemas.map(s => `${s.displayName} (${s.technicalName})`).join(', ');
-        const history = chatTurns.slice(-4).map(c => ({ role: c.who === 'user' ? 'user' : 'assistant', content: c.text }));
-        const aiResult = await fetchAiAskResponse(query.trim(), profileText, history);
+      // 2. Fetch AI synthesis from LLM with full context
+      const profileText = schemas.map(s => `• ${s.displayName} (${s.technicalName}): ${s.logicalType}, ${s.businessMeaning}`).join('\n');
+      const kpisText = dashboard.kpis.map(k => `${k.label}: ${k.value} (${k.note || ''})`).join(', ');
+      const history = chatTurns.slice(-4).map(c => ({ role: c.who === 'user' ? 'user' : 'assistant', content: c.text }));
+      const sampleData = (context.cleanedRows || []).slice(0, 3);
 
-        if (aiResult && aiResult.text && !aiResult.text.includes('has been processed against')) {
+      const aiResult = await fetchAiAskResponse(query.trim(), profileText, history, {
+        domain: context.domain?.primaryDomain,
+        kpisText,
+        sampleData
+      });
+
+      if (aiResult) {
+        // If LLM specified a chartSpec and local turn doesn't already have one
+        if (aiResult.chartSpec && !responseTurn.chart) {
+          const generatedChart = buildChartForSpec(context.cleanedRows, schemas, aiResult.chartSpec);
+          if (generatedChart) {
+            responseTurn.chart = generatedChart;
+          }
+        }
+
+        // If LLM provided an insightful response
+        if (aiResult.text && !aiResult.text.includes('has been processed against the verified data context') && !aiResult.text.includes('direct executive answer citing verified figures')) {
           responseTurn.text = aiResult.text;
         }
       }
 
       setChatTurns(prev => [...prev, responseTurn]);
+    } catch (err) {
+      console.error('[Ask Data Error]', err);
     } finally {
       setIsChatLoading(false);
     }

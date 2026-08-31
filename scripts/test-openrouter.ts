@@ -22,7 +22,7 @@ loadEnv();
 
 async function checkOpenRouter() {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  const model = process.env.OPENROUTER_MODEL || 'stealth/ox-alpha';
+  const model = process.env.OPENROUTER_MODEL || 'openrouter/free';
   
   if (!apiKey) {
     console.error('OPENROUTER_API_KEY is not set in environment.');

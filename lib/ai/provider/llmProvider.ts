@@ -23,7 +23,7 @@ export interface LLMConfig {
 
 const DEFAULT_CONFIG: LLMConfig = {
   provider: (process.env.LLM_PROVIDER as any) || 'openrouter',
-  modelName: process.env.OPENROUTER_MODEL || 'stealth/ox-alpha',
+  modelName: process.env.OPENROUTER_MODEL || 'openrouter/free',
   temperature: 0.1,
   maxTokens: 4096,
   promptVersion: 'v2.1'

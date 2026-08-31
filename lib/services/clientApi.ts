@@ -70,12 +70,24 @@ export async function fetchAiStatNotes(params: any) {
   }
 }
 
-export async function fetchAiAskResponse(question: string, profileText: string, history: any[]) {
+export async function fetchAiAskResponse(
+  question: string,
+  profileText: string,
+  history: any[],
+  extraContext?: { domain?: string; kpisText?: string; sampleData?: any[] }
+) {
   try {
     const res = await fetch('/api/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, profileText, history })
+      body: JSON.stringify({
+        question,
+        profileText,
+        history,
+        domain: extraContext?.domain,
+        kpisText: extraContext?.kpisText,
+        sampleData: extraContext?.sampleData
+      })
     });
     if (!res.ok) return null;
     const data = await res.json();

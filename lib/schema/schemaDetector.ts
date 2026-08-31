@@ -26,6 +26,17 @@ export function safeIsoDate(val: any): string | null {
     const s = String(val).trim();
     if (/^\d{1,3}$/.test(s) || /^\d+\.\d+$/.test(s)) return null;
 
+    // Support 8-digit integer DateKeys like 20240101
+    const ymdMatch = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (ymdMatch) {
+      const yr = parseInt(ymdMatch[1], 10);
+      const mo = parseInt(ymdMatch[2], 10);
+      const day = parseInt(ymdMatch[3], 10);
+      if (yr >= 1970 && yr <= 2100 && mo >= 1 && mo <= 12 && day >= 1 && day <= 31) {
+        return `${yr}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+
     if (STRICT_DATE_REGEX.test(s)) {
       const timestamp = Date.parse(s);
       if (!isNaN(timestamp)) {
@@ -52,6 +63,18 @@ export function parseDateVal(val: any): Date | null {
     }
     const s = String(val).trim();
     if (/^\d{1,3}$/.test(s) || /^\d+\.\d+$/.test(s)) return null;
+
+    // Support 8-digit integer DateKeys like 20240101
+    const ymdMatch = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (ymdMatch) {
+      const yr = parseInt(ymdMatch[1], 10);
+      const mo = parseInt(ymdMatch[2], 10) - 1;
+      const day = parseInt(ymdMatch[3], 10);
+      if (yr >= 1970 && yr <= 2100 && mo >= 0 && mo <= 11 && day >= 1 && day <= 31) {
+        const d = new Date(yr, mo, day);
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
 
     if (STRICT_DATE_REGEX.test(s)) {
       const timestamp = Date.parse(s);

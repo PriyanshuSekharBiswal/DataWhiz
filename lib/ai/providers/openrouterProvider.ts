@@ -51,7 +51,7 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   public getModelName(): string {
-    return process.env.OPENROUTER_MODEL || 'stealth/ox-alpha';
+    return process.env.OPENROUTER_MODEL || 'openrouter/free';
   }
 
   private getApiKey(): string {

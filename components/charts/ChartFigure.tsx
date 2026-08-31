@@ -94,12 +94,12 @@ export const ChartFigure: React.FC<ChartFigureProps> = ({
   const hasIndexFallback = useMemo(() => {
     if (isScatter || isLine) return false;
     if (!displayData || displayData.length === 0) return false;
-    const labels = displayData.map(d => String(d.name || d.label || ''));
-    return labels.every((l, idx) => l === String(idx));
+    const labels = displayData.map(d => String(d.name || d.label || '').trim());
+    return labels.length > 1 && labels.every((l, idx) => l === String(idx));
   }, [displayData, isScatter, isLine]);
 
   useEffect(() => {
-    if (!canvasRef.current || !displayData || displayData.length === 0 || hasIndexFallback) return;
+    if (!canvasRef.current || !displayData || displayData.length === 0) return;
 
     if (chartInstance.current) {
       chartInstance.current.destroy();
@@ -128,14 +128,18 @@ export const ChartFigure: React.FC<ChartFigureProps> = ({
     hBarGradient.addColorStop(0.6, '#06B6D4');
     hBarGradient.addColorStop(1, '#00D2B4');
 
-    const labels = displayData.map(d => String(d.name || d.label || ''));
+    const labels = displayData.map((d, idx) => {
+      const raw = String(d.name || d.label || '').trim();
+      if (hasIndexFallback) return `Segment ${idx + 1}`;
+      return raw || `Item ${idx + 1}`;
+    });
     const rawValues = displayData.map(d => typeof d.value === 'number' ? d.value : parseFloat(d.value) || 0);
 
     let config: ChartConfiguration;
 
     if (isScatter) {
-      const scatterPoints = displayData.map(d => ({
-        x: d.xVal !== undefined ? d.xVal : parseFloat(d.name) || 0,
+      const scatterPoints = displayData.map((d, idx) => ({
+        x: d.xVal !== undefined ? d.xVal : parseFloat(d.name) || idx + 1,
         y: d.value
       }));
 
@@ -415,8 +419,14 @@ export const ChartFigure: React.FC<ChartFigureProps> = ({
     };
   }, [displayData, isScatter, isLine, isPie, isHorizontalBar, isBar, height, spec.multiDatasets, spec.title, spec.unitMetadata, hasIndexFallback]);
 
-  if (hasIndexFallback) {
-    return null;
+  if (!displayData || displayData.length === 0) {
+    return (
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs flex flex-col justify-center items-center text-center relative" style={{ minHeight: `${height}px` }}>
+        <BarChart2 className="w-8 h-8 text-slate-300 mb-2" />
+        <h4 className="font-sans font-bold text-sm text-slate-700 m-0">{spec.title}</h4>
+        <p className="text-xs text-slate-400 mt-1 max-w-xs">{spec.why || 'Observation records loaded across dataset.'}</p>
+      </div>
+    );
   }
 
   return (

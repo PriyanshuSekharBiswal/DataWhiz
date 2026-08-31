@@ -4,11 +4,16 @@ import React from 'react';
 import { StatisticsReport } from '@/lib/analytics/statisticsEngine';
 import { Binary, Sigma, Sparkles, BarChart2, Activity, Layers, Database, AlertCircle } from 'lucide-react';
 
+import { ChartFigure } from '@/components/charts/ChartFigure';
+
 interface StatisticsViewProps {
   report: StatisticsReport;
 }
 
 export const StatisticsView: React.FC<StatisticsViewProps> = ({ report }) => {
+  const topMeasure = report.descriptiveTable[0];
+  const correlationPairs = report.correlationMatrix?.topPairs || [];
+
   return (
     <div className="flex flex-col gap-8 w-full max-w-7xl mx-auto animate-rise">
       {/* Header */}
@@ -31,6 +36,45 @@ export const StatisticsView: React.FC<StatisticsViewProps> = ({ report }) => {
           {report.shape.rowCount.toLocaleString()} ROWS · {report.shape.colCount} COLUMNS
         </div>
       </div>
+
+      {/* Visual Analytics Section: Dispersion & Correlations */}
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {topMeasure && (
+          <ChartFigure
+            spec={{
+              id: 'chart-stat-dispersion',
+              title: `${topMeasure.displayName || topMeasure.column} Statistical Benchmarks`,
+              why: 'Comparison of central tendency (Mean, Median) against dispersion boundaries (Min, IQR, Max).',
+              type: 'bar',
+              data: [
+                { name: 'Min', value: Math.round(topMeasure.min || 0) },
+                { name: 'Median', value: Math.round(topMeasure.median || 0) },
+                { name: 'Mean (μ)', value: Math.round(topMeasure.mean || 0) },
+                { name: 'IQR Spread', value: Math.round(topMeasure.iqr || 0) },
+                { name: 'Std Dev (σ)', value: Math.round(topMeasure.std || 0) },
+                { name: 'Max', value: Math.round(topMeasure.max || 0) }
+              ]
+            }}
+            height={320}
+          />
+        )}
+
+        {correlationPairs.length > 0 && (
+          <ChartFigure
+            spec={{
+              id: 'chart-stat-correlations',
+              title: 'Top Bivariate Correlation Coefficients (r)',
+              why: 'Degree of linear co-movement and directional association across attribute pairs.',
+              type: 'bar',
+              data: correlationPairs.slice(0, 6).map(c => ({
+                name: `${(c.nameA || c.colA).slice(0, 10)} ↔ ${(c.nameB || c.colB).slice(0, 10)}`,
+                value: Math.round(c.r * 100) / 100
+              }))
+            }}
+            height={320}
+          />
+        )}
+      </section>
 
       {/* Shape of Data Cards - 6 Vibrant Chromatic Tiles */}
       <section className="flex flex-col gap-3">
@@ -141,16 +185,15 @@ export const StatisticsView: React.FC<StatisticsViewProps> = ({ report }) => {
       </section>
 
       {/* Pearson Correlation Matrix */}
-      {report.correlationMatrix && report.correlationMatrix.topPairs && report.correlationMatrix.topPairs.length > 0 && (
+      {correlationPairs.length > 0 && (
         <section className="panel bg-white/95 backdrop-blur-md border border-slate-200 shadow-md flex flex-col gap-3 p-6 rounded-2xl">
           <h3 className="font-sans text-lg font-bold text-slate-900 flex items-center gap-2 m-0">
             <BarChart2 className="w-5 h-5 text-indigo-600" />
             Bivariate Pearson Correlation Matrix (Linear Relationships)
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {report.correlationMatrix.topPairs.map((corr, idx) => {
+            {correlationPairs.map((corr, idx) => {
               const isPositive = corr.r >= 0;
-              const isStrong = Math.abs(corr.r) >= 0.6;
 
               return (
                 <div

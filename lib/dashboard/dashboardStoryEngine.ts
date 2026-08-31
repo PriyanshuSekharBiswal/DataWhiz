@@ -211,6 +211,13 @@ export function buildDashboardStory(context: DatasetContext): DashboardSpec {
     });
   }
 
+  // Section: Media Attribution / Marketing Media
+  const isMarketingMmm = schemas.some(s => /_imp$|_clk$/i.test(s.technicalName)) ||
+    (schemas.filter(s => /spend|impression|click|ad_/i.test(s.technicalName)).length >= 2);
+  if (isMarketingMmm) {
+    tabs.push({ id: 'marketing-media', label: 'Media Attribution', icon: 'Megaphone', sectionType: 'chart_grid' });
+  }
+
   // Section: Distribution & Statistics
   tabs.push({ id: 'statistics', label: 'Statistical Distribution', icon: 'BarChart2', sectionType: 'statistics' });
   sections.push({

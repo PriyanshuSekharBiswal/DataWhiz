@@ -5,8 +5,165 @@ import { executeDataWhizTool } from '@/lib/ai/tools/toolRegistry';
 import { parseUserIntent } from '@/lib/intent/intentParser';
 import { evaluateInvestmentPriorities } from '@/lib/analytics/decisionEngine';
 import { humanizeColumnName } from '@/lib/semantics/columnHumanizer';
-import { parseNumberVal } from '@/lib/schema/schemaDetector';
+import { parseNumberVal, safeIsoDate } from '@/lib/schema/schemaDetector';
 import { formatMetricValue } from '@/lib/formatting/numberFormatter';
+
+/**
+ * Deterministically constructs interactive DynamicChartSpec from dataset rows
+ */
+export function buildChartForSpec(
+  rows: Record<string, any>[],
+  schemas: ColumnSchema[],
+  spec: {
+    type?: string;
+    title?: string;
+    xField?: string;
+    yField?: string;
+    agg?: string;
+    why?: string;
+  }
+): DynamicChartSpec | null {
+  if (!rows || rows.length === 0 || !schemas || schemas.length === 0) return null;
+
+  const yColName = spec.yField || schemas.find(s => s.physicalType === 'number' || s.logicalType.startsWith('measure'))?.technicalName;
+  if (!yColName) return null;
+  const ySchema = schemas.find(s => s.technicalName === yColName);
+
+  let xColName = spec.xField;
+  if (!xColName) {
+    if (spec.type === 'line' || spec.type === 'area') {
+      xColName = schemas.find(s => s.physicalType === 'date' || s.logicalType === 'date' || s.semanticRole === 'timestamp')?.technicalName;
+    }
+    if (!xColName) {
+      xColName = schemas.find(s => (s.physicalType === 'string' || s.logicalType.startsWith('dimension')) && s.technicalName !== yColName)?.technicalName;
+    }
+  }
+  if (!xColName) xColName = yColName;
+
+  const xSchema = schemas.find(s => s.technicalName === xColName);
+  const chartType = (spec.type || (xSchema?.physicalType === 'date' || xSchema?.logicalType === 'date' ? 'line' : 'bar')).toLowerCase() as any;
+  const agg = (spec.agg || 'sum').toLowerCase();
+
+  const mName = ySchema?.displayName || yColName;
+  const dName = xSchema?.displayName || xColName;
+
+  // Case 1: Scatter plot between two numeric variables
+  if (chartType === 'scatter' && xColName !== yColName && (xSchema?.physicalType === 'number' || xSchema?.logicalType.startsWith('measure'))) {
+    const points: any[] = [];
+    const stride = rows.length > 500 ? Math.ceil(rows.length / 300) : 1;
+    for (let i = 0; i < rows.length; i += stride) {
+      const r = rows[i];
+      const xVal = parseNumberVal(r[xColName]);
+      const yVal = parseNumberVal(r[yColName]);
+      if (xVal !== null && yVal !== null) {
+        points.push({ xVal, value: yVal, name: `Point ${points.length + 1}` });
+      }
+    }
+    return {
+      id: `chart-ask-scatter-${Date.now()}`,
+      title: spec.title || `${mName} vs ${dName}`,
+      why: spec.why || `Scatter correlation distribution between ${mName} and ${dName}.`,
+      type: 'scatter',
+      xField: xColName,
+      yField: yColName,
+      unit: ySchema?.unit,
+      unitMetadata: ySchema?.unitMetadata,
+      data: points
+    };
+  }
+
+  // Case 2: Time-series Line / Area Chart
+  const isDateX = xSchema?.physicalType === 'date' || xSchema?.logicalType === 'date' || /date|month|year|week|day|time/i.test(xColName);
+  if (isDateX || chartType === 'line' || chartType === 'area') {
+    const dateMap = new Map<string, { sum: number; count: number; min: number; max: number }>();
+    for (const r of rows) {
+      const rawDate = r[xColName];
+      const dKey = safeIsoDate(rawDate) || String(rawDate ?? '').trim();
+      const val = parseNumberVal(r[yColName]);
+      if (!dKey || val === null) continue;
+
+      const curr = dateMap.get(dKey) || { sum: 0, count: 0, min: Infinity, max: -Infinity };
+      curr.sum += val;
+      curr.count++;
+      curr.min = Math.min(curr.min, val);
+      curr.max = Math.max(curr.max, val);
+      dateMap.set(dKey, curr);
+    }
+
+    const sortedDates = Array.from(dateMap.keys()).sort();
+    const dataPoints = sortedDates.slice(0, 100).map(dKey => {
+      const entry = dateMap.get(dKey)!;
+      let finalVal = entry.sum;
+      if (agg === 'avg' || agg === 'mean') finalVal = entry.count ? entry.sum / entry.count : 0;
+      else if (agg === 'min') finalVal = entry.min;
+      else if (agg === 'max') finalVal = entry.max;
+      else if (agg === 'count') finalVal = entry.count;
+      return {
+        name: dKey,
+        value: Math.round(finalVal * 100) / 100
+      };
+    });
+
+    return {
+      id: `chart-ask-line-${Date.now()}`,
+      title: spec.title || `${mName} Trajectory over ${dName}`,
+      why: spec.why || `Historical time trajectory of ${mName} grouped chronologically by ${dName}.`,
+      type: chartType === 'area' ? 'area' : 'line',
+      xField: xColName,
+      yField: yColName,
+      unit: ySchema?.unit,
+      unitMetadata: ySchema?.unitMetadata,
+      isSourceDerivedDimension: true,
+      hasMeaningfulLabels: true,
+      data: dataPoints
+    };
+  }
+
+  // Case 3: Categorical Bar / Pie / Donut / Horizontal Bar
+  const catMap = new Map<string, { sum: number; count: number; min: number; max: number }>();
+  for (const r of rows) {
+    const rawCat = r[xColName];
+    const catKey = rawCat !== undefined && rawCat !== null && String(rawCat).trim() !== '' ? String(rawCat).trim() : 'Other';
+    const val = parseNumberVal(r[yColName]) ?? 1;
+
+    const curr = catMap.get(catKey) || { sum: 0, count: 0, min: Infinity, max: -Infinity };
+    curr.sum += val;
+    curr.count++;
+    curr.min = Math.min(curr.min, val);
+    curr.max = Math.max(curr.max, val);
+    catMap.set(catKey, curr);
+  }
+
+  const entries = Array.from(catMap.entries()).map(([cat, entry]) => {
+    let finalVal = entry.sum;
+    if (agg === 'avg' || agg === 'mean') finalVal = entry.count ? entry.sum / entry.count : 0;
+    else if (agg === 'min') finalVal = entry.min;
+    else if (agg === 'max') finalVal = entry.max;
+    else if (agg === 'count') finalVal = entry.count;
+    return {
+      name: cat,
+      value: Math.round(finalVal * 100) / 100
+    };
+  });
+
+  // Sort descending by value
+  entries.sort((a, b) => b.value - a.value);
+  const dataPoints = entries.slice(0, 15);
+
+  return {
+    id: `chart-ask-bar-${Date.now()}`,
+    title: spec.title || `${mName} by ${dName}`,
+    why: spec.why || `Categorical breakdown of ${mName} grouped by ${dName}.`,
+    type: chartType === 'pie' || chartType === 'donut' ? chartType : chartType === 'horizontal_bar' ? 'horizontal_bar' : 'bar',
+    xField: xColName,
+    yField: yColName,
+    unit: ySchema?.unit,
+    unitMetadata: ySchema?.unitMetadata,
+    isSourceDerivedDimension: true,
+    hasMeaningfulLabels: true,
+    data: dataPoints
+  };
+}
 
 export function processAskQuery(
   question: string,
@@ -57,7 +214,7 @@ export function processAskQuery(
   const isDefinitionQuery = Boolean(
     matchedCol &&
     (lower.includes('definition') || lower.includes('stand for') || lower.includes('tell me about') || lower.includes('explain column') || /^(what is|what are|explain)\s+[`"']?[a-z0-9_]+[`"']?\??$/i.test(q)) &&
-    !/forecast|trend|total|average|avg|mean|sum|rank|top|highest|compare|versus|vs|anomal|predict|outlier/i.test(lower)
+    !/forecast|trend|total|average|avg|mean|sum|rank|top|highest|compare|versus|vs|anomal|predict|outlier|chart|graph|plot/i.test(lower)
   );
 
   if (matchedCol && isDefinitionQuery) {
@@ -122,12 +279,101 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 3. Ranking & Top-N Query (e.g. "which segment generated most revenue")
+  // 3. Visual Chart & Graph Request Query (e.g. "show graph of revenue by region", "plot line chart")
+  // -------------------------------------------------------------------------
+  const isGraphRequested = /chart|graph|plot|visual|visualize|histogram|diagram|show me (a |the )?(trend|breakdown|distribution|curve)/i.test(lower) ||
+    /breakdown\s+by|grouped\s+by|distribution\s+of|split\s+by/i.test(lower);
+
+  if (isGraphRequested) {
+    const numSchemas = schemas.filter(s => s.physicalType === 'number' || s.logicalType.startsWith('measure'));
+    const matchedMeasure = numSchemas.find(s => {
+      const tech = s.technicalName.toLowerCase();
+      const disp = s.displayName.toLowerCase();
+      const base = tech.replace(/_hz|_usd|_eur|_pct|_c|_kg|_imp|_clk/gi, '');
+      return lower.includes(tech) || lower.includes(disp) || (base.length >= 3 && lower.includes(base));
+    }) || schemas.find(s => s.technicalName === primaryMetric) || numSchemas[0];
+
+    const mCol = matchedMeasure?.technicalName || primaryMetric;
+    const mSchema = schemas.find(s => s.technicalName === mCol);
+    const mDisplayName = mSchema?.displayName || mCol;
+
+    const nonMeasureSchemas = schemas.filter(s => s.technicalName !== mCol && s.logicalType !== 'identifier');
+    let matchedDim = nonMeasureSchemas.find(s => {
+      const tech = s.technicalName.toLowerCase();
+      const disp = s.displayName.toLowerCase();
+      const base = tech.replace(/_id|_code|_key|_name/gi, '');
+      return lower.includes(tech) || lower.includes(disp) || (base.length >= 3 && lower.includes(base));
+    });
+
+    if (!matchedDim) {
+      if (/trend|time|over time|monthly|daily|yearly|trajectory|date|timeline/i.test(lower) && context.primaryDateColumn) {
+        matchedDim = schemas.find(s => s.technicalName === context.primaryDateColumn);
+      } else {
+        matchedDim = schemas.find(s => s.technicalName === primaryDim) || schemas.find(s => s.physicalType === 'string' || s.logicalType.startsWith('dimension'));
+      }
+    }
+
+    const dCol = matchedDim?.technicalName || primaryDim;
+    const dDisplayName = matchedDim?.displayName || dCol;
+
+    let chartType: 'bar' | 'line' | 'pie' | 'donut' | 'horizontal_bar' | 'scatter' | 'area' = 'bar';
+    if (/pie|donut/i.test(lower)) chartType = 'pie';
+    else if (/line|trend|trajectory|timeline|over time/i.test(lower) || matchedDim?.physicalType === 'date' || matchedDim?.logicalType === 'date') chartType = 'line';
+    else if (/area/i.test(lower)) chartType = 'area';
+    else if (/scatter/i.test(lower)) chartType = 'scatter';
+    else if (/horizontal/i.test(lower) || /ranking/i.test(lower)) chartType = 'horizontal_bar';
+
+    let aggFunc = 'sum';
+    if (/avg|average|mean/i.test(lower)) aggFunc = 'avg';
+    else if (/count|number of|frequency/i.test(lower)) aggFunc = 'count';
+    else if (/min|minimum/i.test(lower)) aggFunc = 'min';
+    else if (/max|maximum|peak/i.test(lower)) aggFunc = 'max';
+
+    const generatedChart = buildChartForSpec(rows, schemas, {
+      type: chartType,
+      title: `${mDisplayName} by ${dDisplayName}`,
+      xField: dCol,
+      yField: mCol,
+      agg: aggFunc,
+      why: `Visual representation of ${mDisplayName.toLowerCase()} grouped by ${dDisplayName.toLowerCase()}.`
+    });
+
+    if (generatedChart && generatedChart.data && generatedChart.data.length > 0) {
+      const topItem = generatedChart.data[0];
+      const totalAgg = generatedChart.data.reduce((acc, d) => acc + (typeof d.value === 'number' ? d.value : 0), 0);
+
+      const tableData = {
+        headers: [dDisplayName, `Aggregated ${mDisplayName}`, 'Share %'],
+        rows: generatedChart.data.slice(0, 10).map((d: any) => {
+          const share = totalAgg > 0 ? ((d.value / totalAgg) * 100).toFixed(1) : '—';
+          return [d.name, formatMetricValue(d.value, mSchema?.unitMetadata), `${share}%`];
+        })
+      };
+
+      return {
+        id: `turn-${Date.now()}`,
+        who: 'assistant',
+        text: `### 📊 Visual Breakdown: ${mDisplayName} by ${dDisplayName}\n\nHere is the interactive **${chartType.replace('_', ' ')}** visualization for **${mDisplayName}** grouped across **${dDisplayName}**.\n\n• **Leading Segment:** **${topItem.name}** with **${formatMetricValue(topItem.value, mSchema?.unitMetadata)}** (${totalAgg > 0 ? ((topItem.value / totalAgg) * 100).toFixed(1) : '—'}% share).\n• **Total Aggregated Volume:** **${formatMetricValue(totalAgg, mSchema?.unitMetadata)}** across ${generatedChart.data.length} distinct segments.`,
+        timestamp,
+        chart: generatedChart,
+        tableData,
+        calculationExplanation: `Deterministic aggregation: ${aggFunc.toUpperCase()}(${mCol}) grouped by ${dCol} across ${rows.length.toLocaleString()} verified rows.`,
+        provenance: {
+          toolName: 'build_dynamic_chart',
+          sourceColumns: [mCol, dCol],
+          sampleSize: rows.length,
+          aggregation: aggFunc
+        }
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. Ranking & Top-N Query (e.g. "which segment generated most revenue")
   // -------------------------------------------------------------------------
   if (/top|highest|most|best|rank|leader|worst|lowest|which/i.test(lower) && !/average|mean|avg|correlation/i.test(lower)) {
     const targetMetric = schemas.find(s => (s.physicalType === 'number' || s.logicalType.startsWith('measure')) && (lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase()) || lower.includes(s.technicalName.replace(/_hz|_usd|_pct|_c/gi, '').toLowerCase())))?.technicalName || primaryMetric;
     
-    // Find matching dimension by checking exact name, token without _id/_code, or fallback to first categorical/entity column
     const targetDim = schemas.find(s => {
       const baseName = s.technicalName.toLowerCase().replace(/_id|_key|_code|_name/g, '');
       return (lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase()) || (baseName.length >= 3 && lower.includes(baseName)));
@@ -178,13 +424,12 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 4. Comparison Query (e.g. "compare A vs B" or "Europe vs North")
+  // 5. Comparison Query (e.g. "compare A vs B" or "Europe vs North")
   // -------------------------------------------------------------------------
   if (/compare|vs|versus|difference|between/i.test(lower) && !/correlation|scatter/i.test(lower)) {
     const targetMetric = schemas.find(s => s.physicalType === 'number' && (lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase())))?.technicalName || primaryMetric;
     const targetDim = schemas.find(s => s.logicalType.startsWith('dimension') && (lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase())))?.technicalName || primaryDim;
 
-    // Find mentioned category values
     const uniqueVals = Array.from(new Set(rows.map(r => String(r[targetDim] ?? '')))).filter(Boolean);
     const mentioned = uniqueVals.filter(v => lower.includes(v.toLowerCase()));
 
@@ -213,7 +458,7 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 5. Forecasting & Predictive Query
+  // 6. Forecasting & Predictive Query
   // -------------------------------------------------------------------------
   if (/forecast|predict|project|future|outlook/i.test(lower)) {
     if (!context.capabilities.time_series_forecasting?.supported || !timeInfo) {
@@ -245,7 +490,7 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 6. Anomaly & Outlier Query
+  // 7. Anomaly & Outlier Query
   // -------------------------------------------------------------------------
   if (/anomaly|outlier|unusual|spike|irregular/i.test(lower)) {
     const anomRes = executeDataWhizTool('anomaly_detection', { metric: primaryMetric }, context);
@@ -268,11 +513,16 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 7. Correlation & Relationship Query
+  // 8. Correlation & Relationship Query
   // -------------------------------------------------------------------------
-  if (/correlation|relationship|associate|related|linear|scatter/i.test(lower)) {
+  if (/correlation|correlated|correlate|relationship|associate|related|linear|scatter/i.test(lower)) {
     const numSchemas = schemas.filter(s => s.physicalType === 'number' || s.logicalType.startsWith('measure'));
-    const matchedMeasures = numSchemas.filter(s => lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase()));
+    const matchedMeasures = numSchemas.filter(s => {
+      const tech = s.technicalName.toLowerCase();
+      const disp = s.displayName.toLowerCase();
+      const base = tech.replace(/_hz|_usd|_eur|_pct|_c|_kg/gi, '');
+      return lower.includes(tech) || lower.includes(disp) || (base.length >= 3 && lower.includes(base));
+    });
 
     const metricA = matchedMeasures[0]?.technicalName || context.measures[0]?.technicalName;
     const metricB = matchedMeasures[1]?.technicalName || (context.measures.length > 1 ? context.measures[1]?.technicalName : undefined);
@@ -302,7 +552,7 @@ export function processAskQuery(
   }
 
   // -------------------------------------------------------------------------
-  // 8. Grounded Field & Aggregation Resolver
+  // 9. Grounded Field & Aggregation Resolver
   // -------------------------------------------------------------------------
   const numSchemas = schemas.filter(s => s.physicalType === 'number' || s.logicalType.startsWith('measure'));
   const matchedField = numSchemas.find(s => lower.includes(s.technicalName.toLowerCase()) || lower.includes(s.displayName.toLowerCase())) ||

@@ -59,7 +59,7 @@ export function buildDatasetContext(params: BuildContextParams): DatasetContext 
   );
 
   const candidateTargets = params.schema.filter(s =>
-    targetCandidates.some(tc => tc.column === s.technicalName && tc.usable)
+    targetCandidates.some(tc => tc.column === s.technicalName && tc.usable && (tc.taskType === 'binary_classification' || tc.taskType === 'multiclass_classification'))
   );
 
   const humanFriendlyNames: Record<string, string> = {};
@@ -111,9 +111,14 @@ export function buildDatasetContext(params: BuildContextParams): DatasetContext 
     const addScoreA = a.aggregationBehavior === 'additive' ? 40 : a.measurementType === 'temperature' ? -30 : 10;
     const addScoreB = b.aggregationBehavior === 'additive' ? 40 : b.measurementType === 'temperature' ? -30 : 10;
 
-    // Favor high variance, low missingness, and primary metric role
-    const scoreA = (a.semanticRole === 'primary_metric' ? 50 : 0) + addScoreA + (stdA > 0 ? 30 : 0) + (100 - missingA) * 0.2;
-    const scoreB = (b.semanticRole === 'primary_metric' ? 50 : 0) + addScoreB + (stdB > 0 ? 30 : 0) + (100 - missingB) * 0.2;
+    const isRevA = /revenue|sales|income|turnover|gmv|amount|spend|charge/i.test(a.technicalName) || a.logicalType === 'measure_currency';
+    const isRevB = /revenue|sales|income|turnover|gmv|amount|spend|charge/i.test(b.technicalName) || b.logicalType === 'measure_currency';
+    const revBonusA = isRevA ? 45 : 0;
+    const revBonusB = isRevB ? 45 : 0;
+
+    // Favor high variance, low missingness, commercial weight, and primary metric role
+    const scoreA = (a.semanticRole === 'primary_metric' ? 50 : 0) + revBonusA + addScoreA + (stdA > 0 ? 30 : 0) + (100 - missingA) * 0.2;
+    const scoreB = (b.semanticRole === 'primary_metric' ? 50 : 0) + revBonusB + addScoreB + (stdB > 0 ? 30 : 0) + (100 - missingB) * 0.2;
 
     return scoreB - scoreA;
   });
